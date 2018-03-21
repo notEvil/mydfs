@@ -1,0 +1,29 @@
+- list
+  - directories
+    - merge by name
+  - files
+    - format: {source}_{name}
+      {source} .. ({i}|\.)+
+      {i} .. index or character of source if file exists in source
+      .   .. else
+      examples: 1._file.name
+                .2_another.file
+                12_file.in.both
+- find
+  - try {source}_{name}
+    - if file exists; source pattern shall match exactly
+      - file found
+    - else
+      - try {name}
+        - use first match
+  - else
+    - try {name}
+      - use first match
+- open
+  - find
+  - open all
+- read
+  - read first
+  - seek others
+- write
+  - write all
