@@ -37,7 +37,7 @@ class Mydfs(fuse.LoggingMixIn, fuse.Operations):
 
     def __init__(self, roots):
         '''
-        @param roots iter((str, str)); sequence of (character, path to root)
+        @param roots iter((str, str)); iterable of (character, path to root)
         '''
         self.Roots = roots
 
@@ -532,35 +532,3 @@ class Mydfs(fuse.LoggingMixIn, fuse.Operations):
 
     def _ensure_directory(self, path):
         os.makedirs(ospath.dirname(path), exist_ok=True)
-
-
-if __name__ == '__main__':
-    import argparse
-    import logging
-
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument('-d', '--debug', action='store_true', default=False, help='Debug mode')
-    parser.add_argument(
-        metavar='root', nargs='+', dest='roots', help='Path of root directory as \'{character}={path}\'')
-    parser.add_argument('dir', help='Path of directory to attach to')
-
-    args = parser.parse_args()
-
-    roots = []
-    for root in args.roots:
-        i = root.find('=')
-        if i == -1:
-            raise argparse.ArgumentError('root', 'Invalid root {}'.format(repr(root)))
-
-        character = root[:i]
-        path = root[(i + 1):]
-
-        if not ospath.isdir(path):
-            raise FileNotFoundError(path)
-
-        roots.append((character, path))
-
-    logging.basicConfig()
-
-    fuse.FUSE(Mydfs(roots), args.dir, foreground=True, debug=args.debug)
