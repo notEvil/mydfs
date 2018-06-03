@@ -38,3 +38,35 @@ class cached:
             return r
 
         return _cached
+
+
+def repr_object(x, posAttributeNames=None, kwAttributeNames=None):
+    '''
+    Builds a string representation of an object using a format representing object initialization.
+
+    @param x                 any
+    @param posAttributeNames None or iter(str); iterable of attribute names for positional arguments
+    @param kwAttributeNames  None or mapping(str: str) or iter(str); mapping of argument name to attribute name for
+                             keyword arguments or iterable of attribute names
+    @return str
+    '''
+    import collections
+
+    args = []
+
+    if posAttributeNames is not None:
+        for attributeName in posAttributeNames:
+            value = getattr(x, attributeName)
+            args.append(repr(value))
+
+    if kwAttributeNames is not None:
+        if not isinstance(kwAttributeNames, collections.Mapping):
+            kwAttributeNames = collections.OrderedDict((''.join([attributeName[0].lower(), attributeName[1:]]),
+                                                        attributeName) for attributeName in kwAttributeNames)
+
+        for argumentName, attributeName in kwAttributeNames.items():
+            value = getattr(x, attributeName)
+            args.append('{}={}'.format(argumentName, repr(value)))
+
+    r = '{}({})'.format(type(x).__name__, ', '.join(args))
+    return r

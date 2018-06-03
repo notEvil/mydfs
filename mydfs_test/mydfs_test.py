@@ -6,6 +6,8 @@ import collections
 import stat
 import logging
 import itertools as it
+import tempfile
+import shutil
 ospath = os.path
 
 NAME_ALPHABET = r'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._- `=;[]\\\',~!@#$%^&*()+:{}|"<>?'
@@ -74,28 +76,28 @@ def subsets(draw, xx, min_sizes=hys.just(0)):
 
 
 @hys.composite
-def paths(draw, roots, cache=None):
+def paths(draw, rootPaths, cache=None):
     '''
     Strategy for generating paths from an existing file system.
 
-    @param roots strategy: str; strategy generating a path which represents the root of a filesystem
+    @param rootPaths strategy: str; strategy generating a path which represents the path of the root of a filesystem
     @param cache None or mapping(str: collection(str)); a cache for candidates;
                  the caller is responsible for invalidation
     @return str
     '''
 
-    root = draw(roots)
+    rootPath = draw(rootPaths)
 
-    paths = _all_paths(root, cache=cache)
+    paths = _all_paths(rootPath, cache=cache)
     r = draw(hys.sampled_from(paths))
     return r
 
 
 @py_tools.cached()
-def _all_paths(root):
+def _all_paths(rootPath):
     r = []
 
-    for base, dirNames, fileNames in os.walk(root):
+    for base, dirNames, fileNames in os.walk(rootPath):
         r.append(base)
 
         for name in it.chain(dirNames, fileNames):
@@ -133,14 +135,20 @@ def _amodes(draw):
     return r
 
 
-def directory_subs():
+@hys.composite
+def directory_subs(draw):
     '''
     Strategy to generate contents of directories recursively.
 
     @return [_File or _Directory]
     '''
 
-    return hys.lists(hys.recursive(_files(), _directories))
+    r = draw(hys.lists(hys.recursive(_files(), _directories, max_leaves=10)))
+
+    r = {sub.Name: sub for sub in r}
+    r = list(r.values())
+
+    return r
 
 
 @hys.composite
@@ -225,7 +233,7 @@ class _Directory:
 def _file_names(draw):
     # characters = draw(hys.lists(hys.characters(blacklist_characters='/\0', blacklist_categories=['Cs']), min_size=1))
     # r = ''.join(characters)
-    r = draw(hys.text(alphabet=NAME_ALPHABET, min_size=1))
+    r = draw(hys.text(alphabet=NAME_ALPHABET, min_size=1).filter(lambda name: name not in ['.', '..']))
     return r
 
 
@@ -375,3 +383,294 @@ def _directory_subs_subsets2(subs, indices, random, draw):
             r[nIndex][-1].Subs = nSubs[nIndex]
 
     return r
+
+
+@hys.composite
+def mydfs_environments(draw, directorySubsSubsets):
+    '''
+    Strategy to generate environments for mydfs.
+
+    @param directorySubsSubsets strategy: [[_File or _Directory]]
+    @return {str: [_File or _Directory]}
+    '''
+    directorySubsSubsets = draw(directorySubsSubsets)
+
+    n = len(directorySubsSubsets)
+
+    alphabet = list(NAME_ALPHABET)
+    alphabet.remove('.')
+    alphabet = ''.join(alphabet)
+
+    i = 0
+    while True:
+        i += 1
+        characters = draw(hys.text(alphabet=alphabet, min_size=n, max_size=n))
+
+        if len(set(characters)) == n:
+            break
+
+    r = {character: directorySubsSubset for character, directorySubsSubset in zip(characters, directorySubsSubsets)}
+    return r
+
+
+class _FsState:
+    def __init__(self, rootDirectoryState):
+        self.RootDirectoryState = rootDirectoryState
+
+    def assert_(self, rootPath):
+        self.RootDirectoryState.assert_(rootPath)
+
+
+class _FileState:
+    def __init__(self):
+        pass
+
+    def assert_(self, path):
+        pass
+
+
+class _DirectoryState:
+    def __init__(self, subStates=None):
+        self.SubStates = {} if subStates is None else subStates
+
+    def assert_(self, path):
+        names = set(_sudo_listdir(path))
+
+        assert names == self.SubStates.keys()
+
+        for name, subState in self.SubStates.items():
+            p = ospath.join(path, name)
+            subState.assert_(p)
+
+
+def _sudo_listdir(path):
+    mode = os.stat(path).st_mode
+
+    os.chmod(path, stat.S_IRWXO)
+    r = os.listdir(path)
+    os.chmod(path, mode)
+
+    return r
+
+
+@hys.composite
+def mydfs_test_arguments(draw, environments):
+    '''
+    Strategy to generate arguments for unit test.
+
+    @param environments strategy: {str: [_File or _Directory]}; see mydfs_environments
+    @return {str: [_File or _Directory]}, {str: _FsState}
+    '''
+    environment = draw(environments)
+
+    fsStates = {
+        character: _FsState(_DirectoryState(subStates={sub.Name: _sub_to_state(sub)
+                                                       for sub in directorySubs}))
+        for character, directorySubs in environment.items()
+    }
+
+    return environment, fsStates
+
+
+def _sub_to_state(sub):
+    if isinstance(sub, _File):
+        r = _FileState()
+        return r
+
+    r = _DirectoryState(subStates={nSub.Name: _sub_to_state(nSub) for nSub in sub.Subs})
+    return r
+
+
+@hy.settings(suppress_health_check=[hy.HealthCheck.large_base_example, hy.HealthCheck.too_slow])
+@hy.reproduce_failure('3.57.0', b'AAAAAAE=')
+@hy.given(
+    mydfs_test_arguments(
+        mydfs_environments(directory_subs_subsets2(directory_subs(), hys.integers(min_value=2, max_value=4)))))
+def test_pass(arguments):
+    logging.info('here')
+
+    environment, fsStates = arguments
+
+    path, paths = _create_environment(environment)
+
+    for character, p in paths.items():
+        fsStates[character].assert_(p)
+
+    shutil.rmtree(path)
+
+
+def _create_environment(environment):
+    path = tempfile.mkdtemp()
+    paths = {}
+
+    for character, directorySubs in environment.items():
+        p = ospath.join(path, character)
+        paths[character] = p
+
+        os.mkdir(p)
+
+        for sub in directorySubs:
+            sub.create(p)
+
+    return path, paths
+
+
+# s = mydfs_test_arguments(
+# mydfs_environments(directory_subs_subsets2(directory_subs(), hys.integers(min_value=2, max_value=4))))
+
+# print(s.example())
+
+if False:
+
+    def _str_difference(expected, got):
+        r = [['expected: ', _repr_sorted(expected)], ['got: ', _repr_sorted(got)]]
+
+        if isinstance(expected, collections.Set) and isinstance(got, collections.Set):
+            r.extend([
+                ['difference:'],
+                ['  missing: ', _repr_sorted(expected - got)],
+                ['  unexpected: ', _repr_sorted(got - expected)],
+            ])
+
+        elif isinstance(expected, collections.Mapping) and isinstance(got, collections.Mapping):
+            r.extend([
+                ['difference:'],
+                ['  missing: ', _repr_sorted({k: expected[k]
+                                              for k in expected.keys() - got.keys()})],
+                [
+                    '  differing: ',
+                    _repr_sorted(
+                        {k: (expected[k], got[k])
+                         for k in expected.keys() & got.keys() if expected[k] != got[k]})
+                ],
+                ['  unexpected: ', _repr_sorted({k: got[k]
+                                                 for k in got.keys() - expected.keys()})],
+            ])
+
+        r = _join_str(r)
+        return r
+
+    def _repr_sorted(x):
+        if isinstance(x, collections.Set):
+            r = ''.join(['{', ', '.join(repr(xi) for xi in sorted(x)), '}'])
+            return r
+
+        if isinstance(x, collections.Mapping):
+            r = ''.join(['{', ', '.join('{}: {}'.format(repr(k), repr(x[k])) for k in sorted(x.keys())), '}'])
+            return r
+
+        r = repr(x)
+        return r
+
+    def _join_str(x):
+        r = '\n'.join(' '.join(line) for line in x)
+        return r
+
+    # @hys.composite
+    # def mydfs_envs(draw, directorySubs):
+    # directorySubs = draw(directorySubs)
+
+    # n = draw(hys.integers(min_value=2, max_value=4))
+
+    # i = 0
+    # while True:
+    # i += 1
+    # characters = draw(hys.text(alphabet=NAME_ALPHABET, min_size=n, max_size=n))
+
+    # if len(set(characters)) == n:
+    # break
+
+    # subsets = draw(hys.tuples(*[directory_subs_subsets(hys.just(directorySubs))] * n))
+
+    # r = {character: subs for character, subs in zip(characters, subsets)}
+    # return r
+
+    @hys.composite
+    def mydfs_envs2(draw, subsets):
+        subsets = draw(subsets)
+
+        n = len(subsets)
+
+        alphabet = list(NAME_ALPHABET)
+        alphabet.remove('.')
+        alphabet = ''.join(alphabet)
+
+        i = 0
+        while True:
+            i += 1
+            characters = draw(hys.text(alphabet=alphabet, min_size=n, max_size=n))
+
+            if len(set(characters)) == n:
+                break
+
+        r = {character: subs for character, subs in zip(characters, subsets)}
+        return r
+
+    # import boltons.funcutils as bfuncutils
+
+    # def timed(f):
+    # @bfuncutils.wraps(f)
+    # def _timed(*args, **kwargs):
+    # import time
+
+    # begin = time.time()
+
+    # r = f(*args, **kwargs)
+
+    # end = time.time()
+
+    # logging.info(str(end - begin))
+
+    # return r
+
+    # return _timed
+
+    class FsState:
+        def __init__(self):
+            self.Paths = set()
+
+        def add_path(self, path):
+            self.Paths.add(path)
+
+        def remove_name(self, path):
+            self.Paths.pop(path, None)
+
+        def is_equal(self, rootPath):
+            rIsEqual = True
+            rReport = []
+
+            isEqual, report = self._is_equal_paths(rootPath)
+
+            if not isEqual:
+                rIsEqual = False
+                rReport.append(['Paths'])
+                rReport.extend(['  '] + line for line in report)
+
+            rReport = _join_str(rReport)
+
+            return rIsEqual, rReport
+
+        def _is_equal_paths(self, rootPath):
+            rootPath = ospath.normpath(rootPath)
+
+            got = set()
+
+            for base, dirNames, fileNames in os.walk(rootPath):
+                b = base[(len(rootPath) + 1):]
+
+                for name in it.chain(dirNames, fileNames):
+                    p = ospath.join(b, name)
+                    got.add(p)
+
+            if got == self.Paths:
+                return True, None
+
+            rReport = _str_difference(self.Paths, got)
+            return False, rReport
+
+    # @hy.settings(suppress_health_check=[hy.HealthCheck.large_base_example])
+    @hy.settings(suppress_health_check=[hy.HealthCheck.large_base_example, hy.HealthCheck.too_slow])
+    # @hy.given(mydfs_envs(directory_subs()))
+    @hy.given(mydfs_envs2(directory_subs_subsets2(directory_subs(), hys.integers(min_value=2, max_value=4))))
+    def test_access(mydfsEnv):
+        logging.info(repr(mydfsEnv))
