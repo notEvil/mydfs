@@ -167,8 +167,11 @@ class File:
 
 
 class RegularFile(File):
-    def __init__(self, aTime=None, mTime=None, user=None, group=None, mode=None):
+    def __init__(self, aTime=None, mTime=None, user=None, group=None, mode=None, size=None, content=None):
         super().__init__(aTime, mTime, user, group, mode)
+
+        self.Size = size
+        self.Content = content
 
         self._Path = None
 
@@ -180,8 +183,11 @@ class RegularFile(File):
             os.link(self._Path, path)
             return
 
-        with open(path, 'w'):
-            pass
+        with open(path, 'wb') as file:
+            if self.Content is not None:
+                file.write(self.Content)
+
+        self.Size = 0 if self.Content is None else len(self.Content)
 
         self._create(path)
 
@@ -190,7 +196,13 @@ class RegularFile(File):
     def assert_(self, path):
         super().assert_(path)
 
-        assert os.stat(path).st_size == 0
+        if self.Size is not None:
+            assert os.stat(path).st_size == self.Size
+
+        if self.Content is not None:
+            with open(path, 'rb') as file:
+                content = file.read()
+                assert content == self.Content
 
 
 class Directory(File):
@@ -364,16 +376,25 @@ def modes(draw):
 
 modes = modes()
 
+contents = hys.binary()
+
 
 @hys.composite
-def regular_files(draw, withATime=False, withMTime=False, withUser=False, withGroup=False, withMode=False):
+def regular_files(draw,
+                  withATime=False,
+                  withMTime=False,
+                  withUser=False,
+                  withGroup=False,
+                  withMode=False,
+                  withContent=False):
     aTime = draw(times) if withATime else None
     mTime = draw(times) if withMTime else None
     user = draw(users) if withUser else None
     group = draw(groups) if withGroup else None
     mode = draw(modes) if withMode else None
+    content = draw(contents) if withContent else None
 
-    r = RegularFile(aTime=aTime, mTime=mTime, user=user, group=group, mode=mode)
+    r = RegularFile(aTime=aTime, mTime=mTime, user=user, group=group, mode=mode, content=content)
     return r
 
 
@@ -400,18 +421,29 @@ def _directories(draw, withATime, withMTime, withUser, withGroup, withMode, file
     return r
 
 
-def files(withATime=False, withMTime=False, withUser=False, withGroup=False, withMode=False):
+def files(withATime=False, withMTime=False, withUser=False, withGroup=False, withMode=False, withContent=False):
     def _dirs(files):
         return _directories(withATime, withMTime, withUser, withGroup, withMode, files)
 
     return hys.recursive(
         regular_files(
-            withATime=withATime, withMTime=withMTime, withUser=withUser, withGroup=withGroup, withMode=withMode),
-        _dirs)
+            withATime=withATime,
+            withMTime=withMTime,
+            withUser=withUser,
+            withGroup=withGroup,
+            withMode=withMode,
+            withContent=withContent,
+        ), _dirs)
 
 
 @hys.composite
-def directories(draw, withATime=False, withMTime=False, withUser=False, withGroup=False, withMode=False):
+def directories(draw,
+                withATime=False,
+                withMTime=False,
+                withUser=False,
+                withGroup=False,
+                withMode=False,
+                withContent=False):
     def _dirs(files):
         return _directories(withATime, withMTime, withUser, withGroup, withMode, files)
 
@@ -423,7 +455,9 @@ def directories(draw, withATime=False, withMTime=False, withUser=False, withGrou
                     withMTime=withMTime,
                     withUser=withUser,
                     withGroup=withGroup,
-                    withMode=withMode) | hys.just(_HardLink), _dirs)))
+                    withMode=withMode,
+                    withContent=withContent,
+                ) | hys.just(_HardLink), _dirs)))
 
     links = []
     files = []
@@ -436,7 +470,13 @@ def directories(draw, withATime=False, withMTime=False, withUser=False, withGrou
     if len(files) == 0:
         file = draw(
             regular_files(
-                withATime=withATime, withMTime=withMTime, withUser=withUser, withGroup=withGroup, withMode=withMode))
+                withATime=withATime,
+                withMTime=withMTime,
+                withUser=withUser,
+                withGroup=withGroup,
+                withMode=withMode,
+                withContent=withContent,
+            ))
         files.append((None, file))
 
     if len(files) == 1:
@@ -514,7 +554,13 @@ def _choose_collect(path, directory, exists, r):
 
 if False:
     with Context(
-            directories(withATime=True, withMTime=True, withUser=True, withGroup=True, withMode=True).example(),
-            './test') as context:
+            directories(
+                withATime=True,
+                withMTime=True,
+                withUser=True,
+                withGroup=True,
+                withMode=True,
+                withContent=True,
+            ).example(), './test') as context:
         print(context.Directory)
         input('exit?')
